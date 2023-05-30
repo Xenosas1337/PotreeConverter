@@ -155,7 +155,16 @@ namespace chunker_countsort_laszip {
 			Vector3 max;
 		};
 
-		auto processor = [gridSize, &grid, tStart, &state, &outputAttributes, monitor](shared_ptr<Task> task){
+		// Lambda that processes a set of points during chunking
+    // - gridSize:
+    // - grid:
+    // - tStart: Time start
+    // - state: Just for statistics like time and points processed.
+    // - outputAttributes: Used to get scale and offset. Contains many other things but not used here
+		// - monitor: not used.
+		auto processor = [gridSize, &grid, tStart, &state, &outputAttributes, monitor](shared_ptr<Task> task)
+		{
+			// convenient variables during task initialization
 			string path = task->path;
 			int64_t start = task->firstByte;
 			int64_t numBytes = task->numBytes;
@@ -166,6 +175,7 @@ namespace chunker_countsort_laszip {
 			Vector3 min = task->min;
 			Vector3 max = task->max;
 
+			// Just printing information
 			stringstream ss;
 			ss << "counting " << fs::path(task->path).filename().string() 
 				<< ", first point: " << formatNumber(task->firstPoint)
@@ -176,7 +186,6 @@ namespace chunker_countsort_laszip {
 			logger::INFO(ss.str());
 			
 			
-
 			thread_local unique_ptr<void, void(*)(void*)> buffer(nullptr, free);
 			thread_local int64_t bufferSize = -1;
 
@@ -186,6 +195,7 @@ namespace chunker_countsort_laszip {
 				}
 			}
 
+			// Determine buffer size and allocate buffer
 			if (bufferSize < numBytes){
 				buffer.reset(malloc(numBytes));
 				bufferSize = numBytes;
@@ -196,26 +206,37 @@ namespace chunker_countsort_laszip {
 				laszip_BOOL is_compressed = iEndsWith(path, ".laz") ? 1 : 0;
 				laszip_BOOL request_reader = 1;
 
+				// Create a render and start reading from the desired point (as determined by firstPoint)
 				laszip_create(&laszip_reader);
 				laszip_request_compatibility_mode(laszip_reader, request_reader);
 				laszip_open_reader(laszip_reader, path.c_str(), &is_compressed);
 				laszip_seek_point(laszip_reader, task->firstPoint);
 			}
 
+			// Evaluate a singular scalar as the cube size
 			double cubeSize = (max - min).max();
+
+			// Cube size but in vec3 form
 			Vector3 size = { cubeSize, cubeSize, cubeSize };
+
+			// min and max AABB doesn't necessarily form a cube. Make it that way
 			max = min + cubeSize;
 
 			double dGridSize = double(gridSize);
 
+			// coordinate variables used in the for loop
 			double coordinates[3];
 
+			// Offset from output attributes
 			auto posScale = outputAttributes.posScale;
 			auto posOffset = outputAttributes.posOffset;
 
-			for (int i = 0; i < numToRead; i++) {
+			for (int i = 0; i < numToRead; i++) 
+			{
+				// byte offset of the point we want to read
 				int64_t pointOffset = i * bpp;
 
+				// Read the point. We don't use pointOffset here because the reader reads sequentially and moves the cursor after calling get_coordinates
 				laszip_read_point(laszip_reader);
 				laszip_get_coordinates(laszip_reader, coordinates);
 
@@ -236,7 +257,8 @@ namespace chunker_countsort_laszip {
 					bool inBox = ux >= 0.0 && uy >= 0.0 && uz >= 0.0;
 					inBox = inBox && ux <= 1.0 && uy <= 1.0 && uz <= 1.0;
 
-					if (!inBox) {
+					if (!inBox) 
+					{
 						stringstream ss;
 						ss << "encountered point outside bounding box." << endl;
 						ss << "box.min: " << min.toString() << endl;
@@ -274,6 +296,8 @@ namespace chunker_countsort_laszip {
 			//cout << ("end: " + formatNumber(dbgCurr)) << endl;
 		};
 
+		// CHUNKING STARTS HERE!! Create task pool and register threads within pool
+
 		TaskPool<Task> pool(numChunkerThreads, processor);
 
 		auto tStartTaskAssembly = now();
@@ -286,6 +310,7 @@ namespace chunker_countsort_laszip {
 			laszip_header* header;
 			//laszip_point* point;
 			{
+				// Load the las file
 				laszip_create(&laszip_reader);
 
 				laszip_BOOL request_reader = 1;
@@ -296,27 +321,44 @@ namespace chunker_countsort_laszip {
 				laszip_get_header_pointer(laszip_reader, &header);
 			}
 			
+			// Still not sure what this is? Could be bytes per point but 28 is quite huge.
 			int64_t bpp = header->point_data_record_length;
+
+			// Total Number pf points in the point cloud
 			int64_t numPoints = std::max(uint64_t(header->number_of_point_records), header->extended_number_of_point_records);
 
+			// initialize points left to total number of points 
 			int64_t pointsLeft = numPoints;
+
+			// Each batch will have 1 million points
 			int64_t batchSize = 1'000'000;
+
+			// We havent read a single point
 			int64_t numRead = 0;
 
-			while (pointsLeft > 0) {
-
+			// While there are still points left to process
+			while (pointsLeft > 0) 
+			{
+				// numToRead will always be initialized to min(pointsLeft, batchSize);
 				int64_t numToRead;
-				if (pointsLeft < batchSize) {
+				if (pointsLeft < batchSize) 
+				{
 					numToRead = pointsLeft;
 					pointsLeft = 0;
-				} else {
+				}
+				else 
+				{
 					numToRead = batchSize;
 					pointsLeft = pointsLeft - batchSize;
 				}
 				
+				// byte of the first point in the batch
 				int64_t firstByte = header->offset_to_point_data + numRead * bpp;
+
+				// Convenient variable for bytes required 
 				int64_t numBytes = numToRead * bpp;
 
+				// Create a task with the data initialized
 				auto task = make_shared<Task>();
 				task->path = source.path;
 				task->totalPoints = numPoints;
@@ -330,8 +372,10 @@ namespace chunker_countsort_laszip {
 				task->min = min;
 				task->max = max;
 
+				// Add a task to the task pool. Meanwhile, another thread will be processing these tasks with their own threads. 
 				pool.addTask(task);
 
+				// Even though the task recently added hasnt completed its process, we register it as read
 				numRead += batchSize;
 			}
 
@@ -720,12 +764,14 @@ namespace chunker_countsort_laszip {
 				}
 			}
 
+			// Determine buffer size and allocate buffer
 			if (bufferSize < numBytes) {
 				buffer.reset(malloc(numBytes));
 				bufferSize = numBytes;
 			}
 
 			uint8_t* data = reinterpret_cast<uint8_t*>(buffer.get());
+
 			// memset necessary if attribute handlers don't set all values. 
 			// previous handlers from input with different point formats
 			// may have set the values before.
