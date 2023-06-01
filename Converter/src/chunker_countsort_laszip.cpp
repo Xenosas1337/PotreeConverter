@@ -1014,6 +1014,7 @@ namespace chunker_countsort_laszip {
 
     TaskPool<Task> pool(numChunkerThreads, processor);
 
+    // For each source
     for (auto source : sources)
     {
 
@@ -1023,6 +1024,7 @@ namespace chunker_countsort_laszip {
         laszip_BOOL request_reader = 1;
         laszip_BOOL is_compressed = iEndsWith(source.path, ".laz") ? 1 : 0;
 
+        // Open file
         laszip_create(&laszip_reader);
         laszip_request_compatibility_mode(laszip_reader, request_reader);
         laszip_open_reader(laszip_reader, source.path.c_str(), &is_compressed);
@@ -1037,9 +1039,10 @@ namespace chunker_countsort_laszip {
       vector<Source> tmpSources = { source };
       Attributes inputAttributes = computeOutputAttributes(tmpSources, {});
 
+      // Most of this code is the same as the counting phase
       while (pointsLeft > 0)
       {
-
+        // ditto from counting phase
         int64_t numToRead;
         if (pointsLeft < maxBatchSize) 
         {
@@ -1052,6 +1055,7 @@ namespace chunker_countsort_laszip {
           pointsLeft = pointsLeft - maxBatchSize;
         }
 
+        // Create a task
         auto task = make_shared<Task>();
         task->maxBatchSize = maxBatchSize;
         task->batchSize = numToRead;
